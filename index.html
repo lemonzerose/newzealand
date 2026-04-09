@@ -2296,8 +2296,19 @@ function goToMenu(menuId) {
 
 // ── EXPENSE SYSTEM ──
 const RATE = 18.61;
-let expenses = JSON.parse(localStorage.getItem('nz_expenses') || '{}');
+let expenses = {};
 let currentDay = 'overview';
+
+async function loadExpenses() {
+  if (!FB_READY) { expenses = JSON.parse(localStorage.getItem('nz_expenses') || '{}'); return; }
+  const doc = await fbGet('nz_travel', 'expenses');
+  expenses = (doc && doc.data) ? doc.data : {};
+}
+async function saveExpenses() {
+  if (!FB_READY) { localStorage.setItem('nz_expenses', JSON.stringify(expenses)); showFbStatus(false); return; }
+  const ok = await fbSet('nz_travel', 'expenses', { data: expenses });
+  showFbStatus(ok);
+}
 
 function switchExpense(dayId, btn) {
   document.querySelectorAll('.expense-panel').forEach(p => p.classList.remove('active'));
@@ -2343,7 +2354,7 @@ function saveExpense() {
   const dayKey = currentDay === 'overview' ? 'e1' : currentDay;
   if(!expenses[dayKey]) expenses[dayKey] = [];
   expenses[dayKey].push({ id: Date.now(), title, cat, curr, amt });
-  localStorage.setItem('nz_expenses', JSON.stringify(expenses));
+  saveExpenses();
   closeModal();
   if(currentDay === 'overview') renderOverview();
   else renderDayList(currentDay);
@@ -2351,7 +2362,7 @@ function saveExpense() {
 
 function deleteExpense(dayKey, id) {
   expenses[dayKey] = (expenses[dayKey] || []).filter(e => e.id !== id);
-  localStorage.setItem('nz_expenses', JSON.stringify(expenses));
+  saveExpenses();
   renderDayList(dayKey);
   if(currentDay === 'overview') renderOverview();
 }
@@ -2438,7 +2449,18 @@ function renderOverview() {
 
 
 // ── GROCERY SYSTEM ──
-let groceryItems = JSON.parse(localStorage.getItem('nz_grocery') || '[]');
+let groceryItems = [];
+
+async function loadGrocery() {
+  if (!FB_READY) { groceryItems = JSON.parse(localStorage.getItem('nz_grocery') || '[]'); return; }
+  const doc = await fbGet('nz_travel', 'grocery');
+  groceryItems = (doc && doc.data) ? doc.data : [];
+}
+async function saveGrocery() {
+  if (!FB_READY) { saveGrocery(); showFbStatus(false); return; }
+  const ok = await fbSet('nz_travel', 'grocery', { data: groceryItems });
+  showFbStatus(ok);
+}
 let currentGroceryStore = 'all';
 let groceryImgData = null;
 
@@ -2477,7 +2499,7 @@ function saveGroceryItem() {
   if (!name) { alert('請輸入項目名稱'); return; }
   const item = { id: Date.now(), name, store, img: groceryImgData };
   groceryItems.push(item);
-  localStorage.setItem('nz_grocery', JSON.stringify(groceryItems));
+  saveGrocery();
   closeGroceryModal();
   renderGrocery();
 }
@@ -2488,13 +2510,13 @@ function toggleGroceryDone(id) {
     if (i.id === id) i.done = !i.done;
     return i;
   });
-  localStorage.setItem('nz_grocery', JSON.stringify(groceryItems));
+  saveGrocery();
   renderGroceryList();
 }
 
 function deleteGroceryItem(id) {
   groceryItems = groceryItems.filter(i => i.id !== id);
-  localStorage.setItem('nz_grocery', JSON.stringify(groceryItems));
+  saveGrocery();
   renderGrocery();
 }
 
@@ -2596,7 +2618,18 @@ function closePhotoViewer() {
 
 
 // ── PHOTO TEMPLATE SYSTEM ──
-var photoTemplates = JSON.parse(localStorage.getItem('nz_photo_templates') || '[]');
+var photoTemplates = [];
+
+async function loadPhotoTemplates() {
+  if (!FB_READY) { photoTemplates = JSON.parse(localStorage.getItem('nz_photo_templates') || '[]'); return; }
+  const doc = await fbGet('nz_travel', 'photo_templates');
+  photoTemplates = (doc && doc.data) ? doc.data : [];
+}
+async function savePhotoTemplates() {
+  if (!FB_READY) { savePhotoTemplates(); showFbStatus(false); return; }
+  const ok = await fbSet('nz_travel', 'photo_templates', { data: photoTemplates });
+  showFbStatus(ok);
+}
 var currentPhotoStore = 'all';
 var ptImgData = null;
 
@@ -2635,14 +2668,14 @@ function savePhotoTemplate() {
   var link = document.getElementById('pt-link').value.trim();
   var item = { id: Date.now(), loc: loc, link: link, img: ptImgData };
   photoTemplates.push(item);
-  localStorage.setItem('nz_photo_templates', JSON.stringify(photoTemplates));
+  savePhotoTemplates();
   closePhotoTemplateModal();
   renderPhotoTemplates();
 }
 
 function deletePhotoTemplate(id) {
   photoTemplates = photoTemplates.filter(function(i) { return i.id !== id; });
-  localStorage.setItem('nz_photo_templates', JSON.stringify(photoTemplates));
+  savePhotoTemplates();
   renderPhotoTemplates();
 }
 
@@ -2974,8 +3007,12 @@ async function fbSet(collection, docId, obj) {
       `${FB_BASE_URL}/${collection}/${docId}?key=${FB_API_KEY}&updateMask.fieldPaths=${Object.keys(obj).join('&updateMask.fieldPaths=')}`,
       { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) }
     );
+    if (!r.ok) {
+      const errText = await r.text();
+      console.error(`[Firebase] fbSet ${collection}/${docId} failed ${r.status}:`, errText);
+    }
     return r.ok;
-  } catch(e) { return false; }
+  } catch(e) { console.error('[Firebase] fbSet error:', e); return false; }
 }
 
 async function fbDelete(collection, docId) {
@@ -2987,10 +3024,13 @@ async function fbDelete(collection, docId) {
 async function fbList(collection) {
   try {
     const r = await fetch(`${FB_BASE_URL}/${collection}?key=${FB_API_KEY}`);
-    if (!r.ok) return [];
+    if (!r.ok) {
+      console.error(`[Firebase] fbList ${collection} failed ${r.status}`);
+      return [];
+    }
     const data = await r.json();
     return (data.documents || []).map(doc => ({ id: doc.name.split('/').pop(), ...fbParseDoc(doc) }));
-  } catch(e) { return []; }
+  } catch(e) { console.error('[Firebase] fbList error:', e); return []; }
 }
 
 function fbEncodeFields(obj) {
@@ -3069,18 +3109,48 @@ async function uploadToStorage(file, path, onProgress) {
 }
 
 // ── ATTRACTION DATA (Firestore) ──
-let attrOverrides = {}; // { 'attr-bridge': { name, time, detail, imgUrl } }
+// 每個景點各自存一份 document，避免超過 Firestore 1MB 限制
+let attrOverrides = {};
 
 async function loadAttrOverrides() {
-  if (!FB_READY) { attrOverrides = JSON.parse(localStorage.getItem('nz_attr_overrides') || '{}'); return; }
-  const doc = await fbGet('nz_travel', 'attr_overrides');
-  attrOverrides = (doc && doc.data) ? doc.data : {};
+  if (!FB_READY) {
+    attrOverrides = JSON.parse(localStorage.getItem('nz_attr_overrides') || '{}');
+    return;
+  }
+  try {
+    const docs = await fbList('nz_attr');
+    attrOverrides = {};
+    docs.forEach(doc => { attrOverrides[doc.id] = doc; });
+  } catch(e) {
+    console.error('[Firebase] loadAttrOverrides error:', e);
+    attrOverrides = {};
+  }
+}
+
+async function saveOneAttrOverride(id, data) {
+  if (!FB_READY) {
+    attrOverrides[id] = data;
+    localStorage.setItem('nz_attr_overrides', JSON.stringify(attrOverrides));
+    showFbStatus(false);
+    return false;
+  }
+  const ok = await fbSet('nz_attr', id, data);
+  showFbStatus(ok);
+  return ok;
 }
 
 async function saveAttrOverrides() {
-  if (!FB_READY) { localStorage.setItem('nz_attr_overrides', JSON.stringify(attrOverrides)); showFbStatus(false); return; }
-  const ok = await fbSet('nz_travel', 'attr_overrides', { data: attrOverrides });
-  showFbStatus(ok);
+  // Legacy: save all (used as fallback)
+  if (!FB_READY) {
+    localStorage.setItem('nz_attr_overrides', JSON.stringify(attrOverrides));
+    showFbStatus(false);
+    return;
+  }
+  // Save each one individually
+  for (const [id, data] of Object.entries(attrOverrides)) {
+    await fbSet('nz_attr', id, data);
+  }
+  showFbStatus(true);
 }
 
 function applyAttrOverrides() {
@@ -3248,7 +3318,10 @@ async function saveAttrEdit() {
   }
 
   attrOverrides[attrEditId] = overrideData;
-  await saveAttrOverrides();
+  const ok = await saveOneAttrOverride(attrEditId, overrideData);
+  if (!ok) {
+    console.warn('[Firebase] 景點資料儲存失敗，請檢查 Firestore 規則');
+  }
   applyAttrCard(attrEditId, overrideData);
 
   btn.disabled = false;
@@ -3782,7 +3855,7 @@ function savePresetEdit() {
   closePresetEditModal();
 }
 async function bootApp() {
-  await Promise.all([loadItiAdded(), loadItiDeleted(), loadUserHotels(), loadUserChecklists(), loadPresetOverrides(), loadAttrOverrides()]);
+  await Promise.all([loadItiAdded(), loadItiDeleted(), loadUserHotels(), loadUserChecklists(), loadPresetOverrides(), loadAttrOverrides(), loadExpenses(), loadGrocery(), loadPhotoTemplates()]);
 
   // Apply deletions
   itiDeleted.forEach(pid => {
