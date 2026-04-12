@@ -3193,9 +3193,8 @@ async function loadAttrOverrides() {
     return;
   }
   try {
-    const docs = await fbList('nz_attr');
-    attrOverrides = {};
-    docs.forEach(doc => { attrOverrides[doc.id] = doc; });
+    const doc = await fbGet('nz_travel', 'attr_overrides');
+    attrOverrides = (doc && doc.data) ? doc.data : {};
   } catch(e) {
     console.error('[Firebase] loadAttrOverrides error:', e);
     attrOverrides = {};
@@ -3209,23 +3208,21 @@ async function saveOneAttrOverride(id, data) {
     showFbStatus(false);
     return false;
   }
-  const ok = await fbSet('nz_attr', id, data);
+  // 整包存進同一份 document
+  attrOverrides[id] = data;
+  const ok = await fbSet('nz_travel', 'attr_overrides', { data: attrOverrides });
   showFbStatus(ok);
   return ok;
 }
 
 async function saveAttrOverrides() {
-  // Legacy: save all (used as fallback)
   if (!FB_READY) {
     localStorage.setItem('nz_attr_overrides', JSON.stringify(attrOverrides));
     showFbStatus(false);
     return;
   }
-  // Save each one individually
-  for (const [id, data] of Object.entries(attrOverrides)) {
-    await fbSet('nz_attr', id, data);
-  }
-  showFbStatus(true);
+  const ok = await fbSet('nz_travel', 'attr_overrides', { data: attrOverrides });
+  showFbStatus(ok);
 }
 
 function applyAttrOverrides() {
@@ -3974,7 +3971,15 @@ function savePresetEdit() {
   closePresetEditModal();
 }
 async function bootApp() {
-  await Promise.all([loadItiAdded(), loadItiDeleted(), loadUserHotels(), loadUserChecklists(), loadPresetOverrides(), loadAttrOverrides(), loadExpenses(), loadGrocery(), loadPhotoTemplates()]);
+  // 各自獨立載入，某個失敗不影響其他功能
+  await Promise.allSettled([
+    loadItiAdded(), loadItiDeleted(), loadUserHotels(),
+    loadUserChecklists(), loadPresetOverrides(), loadAttrOverrides(),
+    loadExpenses(), loadGrocery(), loadPhotoTemplates()
+  ]);
+
+  // 測試 Firestore 寫入是否正常（規則是否開放）
+  checkFirestoreAccess();
 
   // Apply deletions
   itiDeleted.forEach(pid => {
@@ -4001,6 +4006,44 @@ async function bootApp() {
 
   // Render checklists
   userChecklists.forEach(cat => renderChecklistCat(cat));
+}
+
+async function checkFirestoreAccess() {
+  try {
+    // 嘗試讀取一個 document 測試連線與規則
+    const r = await fetch(`${FB_BASE_URL}/nz_travel/ping?key=${FB_API_KEY}`);
+    if (r.status === 403) {
+      showFirestoreWarning();
+    }
+  } catch(e) {
+    showFirestoreWarning();
+  }
+}
+
+function showFirestoreWarning() {
+  let banner = document.getElementById('fs-warning');
+  if (banner) return;
+  banner = document.createElement('div');
+  banner.id = 'fs-warning';
+  banner.style.cssText = `
+    position: fixed; top: 0; left: 50%; transform: translateX(-50%);
+    width: 100%; max-width: 480px;
+    background: #fff3cd; border-bottom: 2px solid #e8a600;
+    color: #7a5c00; font-size: 0.68rem;
+    padding: 0.55rem 1rem; z-index: 9998;
+    font-family: 'Noto Serif TC', serif;
+    display: flex; align-items: center; gap: 0.5rem;
+  `;
+  banner.innerHTML = `
+    <span>⚠️ Firestore 規則未開放，資料無法同步。</span>
+    <a href="https://console.firebase.google.com/project/nz-june/firestore/rules"
+       target="_blank"
+       style="color:#7a5c00;font-weight:600;text-decoration:underline;white-space:nowrap;">
+      點此修改規則
+    </a>
+    <button onclick="this.parentElement.remove()" style="margin-left:auto;background:none;border:none;font-size:1rem;cursor:pointer;color:#7a5c00;">✕</button>
+  `;
+  document.body.appendChild(banner);
 }
 
 bootApp();
