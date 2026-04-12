@@ -2627,12 +2627,16 @@ var photoTemplates = [];
 async function loadPhotoTemplates() {
   if (!FB_READY) { photoTemplates = JSON.parse(localStorage.getItem('nz_photo_templates') || '[]'); return; }
   const doc = await fbGet('nz_travel', 'photo_templates');
-  photoTemplates = (doc && doc.data) ? doc.data : [];
+  photoTemplates = (doc && Array.isArray(doc.data)) ? doc.data : [];
+  console.log('[Firebase] photo_templates 載入完成，共', photoTemplates.length, '筆');
 }
 async function savePhotoTemplates() {
-  if (!FB_READY) { localStorage.setItem('nz_photo_templates', JSON.stringify(photoTemplates)); showFbStatus(false); return; }
+  if (!FB_READY) { localStorage.setItem('nz_photo_templates', JSON.stringify(photoTemplates)); showFbStatus(false); return false; }
+  console.log('[Firebase] 儲存 photo_templates，共', photoTemplates.length, '筆，資料大小約', JSON.stringify(photoTemplates).length, 'bytes');
   const ok = await fbSet('nz_travel', 'photo_templates', { data: photoTemplates });
+  console.log('[Firebase] photo_templates 儲存', ok ? '成功' : '失敗');
   showFbStatus(ok);
+  return ok;
 }
 var currentPhotoStore = 'all';
 var ptImgFile = null;
@@ -2676,10 +2680,14 @@ async function savePhotoTemplate() {
   if (ptImgFile) {
     if (btn) { btn.disabled = true; btn.textContent = '上傳中…'; }
     try {
+      console.log('[Photo] 開始壓縮圖片...');
       const compressed = await compressImage(ptImgFile);
+      console.log('[Photo] 壓縮完成，開始上傳 Cloudinary...');
       const path = 'photos/pt_' + Date.now() + '.jpg';
       imgUrl = await uploadToStorage(compressed, path, null);
+      console.log('[Photo] Cloudinary 上傳成功，URL:', imgUrl);
     } catch(e) {
+      console.error('[Photo] 上傳失敗:', e);
       alert('圖片上傳失敗：' + e.message);
       if (btn) { btn.disabled = false; btn.textContent = '儲存'; }
       return;
@@ -2687,8 +2695,13 @@ async function savePhotoTemplate() {
   }
 
   var item = { id: Date.now(), loc: loc, link: link, img: imgUrl };
+  console.log('[Photo] 新增項目:', item);
   photoTemplates.push(item);
-  await savePhotoTemplates();
+
+  if (btn) { btn.textContent = '存入Firebase…'; }
+  const ok = await savePhotoTemplates();
+  console.log('[Photo] Firestore 儲存結果:', ok);
+
   closePhotoTemplateModal();
   renderPhotoTemplates();
   if (btn) { btn.disabled = false; btn.textContent = '儲存'; }
@@ -2746,12 +2759,8 @@ function openPhotoViewer2(id) {
   document.getElementById('photoViewer').classList.add('open');
 }
 
-// init photo templates
-renderPhotoTemplates();
-
 // init expense
-renderOverview();
-Object.keys(dayLabels).forEach(k => renderDayList(k));
+// (expense render moved to bootApp after data loads)
 
 // ── ITINERARY EDIT SYSTEM ──
 let itiEditMode = false;
@@ -3125,9 +3134,33 @@ function fbParseDoc(doc) {
   const out = {};
   for (const [k, v] of Object.entries(doc.fields)) {
     if (v.stringValue !== undefined) {
-      try { out[k] = JSON.parse(v.stringValue); } catch { out[k] = v.stringValue; }
-    } else if (v.integerValue !== undefined) out[k] = Number(v.integerValue);
-    else if (v.booleanValue !== undefined) out[k] = v.booleanValue;
+      // 嘗試解析 JSON（array 或 object）
+      const s = v.stringValue;
+      if ((s.startsWith('[') || s.startsWith('{')) && s.length > 1) {
+        try { out[k] = JSON.parse(s); continue; } catch {}
+      }
+      out[k] = s;
+    } else if (v.integerValue !== undefined) {
+      out[k] = Number(v.integerValue);
+    } else if (v.doubleValue !== undefined) {
+      out[k] = Number(v.doubleValue);
+    } else if (v.booleanValue !== undefined) {
+      out[k] = v.booleanValue;
+    } else if (v.arrayValue !== undefined) {
+      out[k] = (v.arrayValue.values || []).map(item => {
+        if (item.stringValue !== undefined) {
+          try { return JSON.parse(item.stringValue); } catch { return item.stringValue; }
+        }
+        if (item.integerValue !== undefined) return Number(item.integerValue);
+        if (item.booleanValue !== undefined) return item.booleanValue;
+        if (item.mapValue !== undefined) return fbParseDoc(item.mapValue);
+        return null;
+      });
+    } else if (v.mapValue !== undefined) {
+      out[k] = fbParseDoc(v.mapValue);
+    } else if (v.nullValue !== undefined) {
+      out[k] = null;
+    }
   }
   return out;
 }
@@ -4006,6 +4039,13 @@ async function bootApp() {
 
   // Render checklists
   userChecklists.forEach(cat => renderChecklistCat(cat));
+
+  // Render photo templates（等資料載入後才 render）
+  renderPhotoTemplates();
+
+  // Render expense（等資料載入後才 render）
+  renderOverview();
+  Object.keys(dayLabels).forEach(k => renderDayList(k));
 }
 
 async function checkFirestoreAccess() {
