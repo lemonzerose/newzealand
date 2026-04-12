@@ -1209,8 +1209,12 @@ body {
   gap: 0.25rem;
 }
 .edit-mode .iti-preset-actions { display: flex; }
-/* hide old single delete-btn when using preset-actions */
-.iti-item:has(.iti-preset-actions) .iti-delete-btn { display: none !important; }
+/* 編輯模式下，preset-actions 裡的刪除按鈕要顯示 */
+.edit-mode .iti-preset-actions .iti-delete-btn {
+  display: block !important;
+  position: static !important;
+  transform: none !important;
+}
 .iti-action-btns {
   display: none;
   flex-direction: column;
@@ -1317,7 +1321,7 @@ body {
 
   <!-- Edit mode bar -->
   <div class="edit-mode-bar" id="editModeBar">
-    <span class="edit-mode-label">✏️ 編輯模式：點「編輯」修改・「刪除」移除</span>
+    <span class="edit-mode-label">✏️ 編輯模式：長按項目可拖曳排序・點「刪除」移除</span>
     <button class="edit-done-btn" onclick="exitEditMode()">完成</button>
   </div>
 
@@ -2626,18 +2630,18 @@ async function loadPhotoTemplates() {
   photoTemplates = (doc && doc.data) ? doc.data : [];
 }
 async function savePhotoTemplates() {
-  if (!FB_READY) { savePhotoTemplates(); showFbStatus(false); return; }
+  if (!FB_READY) { localStorage.setItem('nz_photo_templates', JSON.stringify(photoTemplates)); showFbStatus(false); return; }
   const ok = await fbSet('nz_travel', 'photo_templates', { data: photoTemplates });
   showFbStatus(ok);
 }
 var currentPhotoStore = 'all';
-var ptImgData = null;
+var ptImgFile = null;
 
 function openPhotoTemplateModal() {
   document.getElementById('photoTemplateModal').classList.add('open');
   document.getElementById('pt-loc').value = '';
   document.getElementById('pt-link').value = '';
-  ptImgData = null;
+  ptImgFile = null;
   document.getElementById('pt-img-preview').innerHTML = '<div class="img-preview-placeholder">📷<br>點擊上傳參考照片</div>';
   updatePhotoLocDatalist();
 }
@@ -2648,9 +2652,9 @@ function closePhotoTemplateModal() {
 function previewPhotoTmplImg(e) {
   var file = e.target.files[0];
   if (!file) return;
+  ptImgFile = file;
   var reader = new FileReader();
   reader.onload = function(ev) {
-    ptImgData = ev.target.result;
     document.getElementById('pt-img-preview').innerHTML = '<img src="' + ev.target.result + '" style="width:100%;height:100%;object-fit:cover;">';
   };
   reader.readAsDataURL(file);
@@ -2663,14 +2667,31 @@ function updatePhotoLocDatalist() {
 }
 function updatePhotoLocList() { updatePhotoLocDatalist(); }
 
-function savePhotoTemplate() {
+async function savePhotoTemplate() {
+  var btn = document.querySelector('#photoTemplateModal .modal-save');
   var loc = document.getElementById('pt-loc').value.trim() || '未分類';
   var link = document.getElementById('pt-link').value.trim();
-  var item = { id: Date.now(), loc: loc, link: link, img: ptImgData };
+  var imgUrl = '';
+
+  if (ptImgFile) {
+    if (btn) { btn.disabled = true; btn.textContent = '上傳中…'; }
+    try {
+      const compressed = await compressImage(ptImgFile);
+      const path = 'photos/pt_' + Date.now() + '.jpg';
+      imgUrl = await uploadToStorage(compressed, path, null);
+    } catch(e) {
+      alert('圖片上傳失敗：' + e.message);
+      if (btn) { btn.disabled = false; btn.textContent = '儲存'; }
+      return;
+    }
+  }
+
+  var item = { id: Date.now(), loc: loc, link: link, img: imgUrl };
   photoTemplates.push(item);
-  savePhotoTemplates();
+  await savePhotoTemplates();
   closePhotoTemplateModal();
   renderPhotoTemplates();
+  if (btn) { btn.disabled = false; btn.textContent = '儲存'; }
 }
 
 function deletePhotoTemplate(id) {
@@ -2740,28 +2761,82 @@ function deletePresetItem(btn) {
   const item = btn.closest('.iti-item');
   const pid = item.dataset.presetId;
   if (!pid) return;
+  const title = item.querySelector('.iti-title')?.textContent || '行程';
+
+  // Animate out
   item.style.transition = 'opacity 0.2s, transform 0.2s';
   item.style.opacity = '0';
   item.style.transform = 'translateX(20px)';
-  setTimeout(() => {
-    item.style.display = 'none';
-    item.style.opacity = '';
-    item.style.transform = '';
-  }, 200);
+  setTimeout(() => { item.style.display = 'none'; }, 200);
+
   itiDeleted.add(pid);
   saveItiDeleted();
+
+  // Show undo toast
+  showUndoToast(title, () => {
+    itiDeleted.delete(pid);
+    saveItiDeleted();
+    item.style.display = '';
+    item.style.opacity = '0';
+    item.style.transform = 'translateX(20px)';
+    setTimeout(() => {
+      item.style.transition = 'opacity 0.2s, transform 0.2s';
+      item.style.opacity = '1';
+      item.style.transform = '';
+    }, 10);
+  });
+}
+
+let undoToastTimer = null;
+function showUndoToast(label, undoFn) {
+  let toast = document.getElementById('undo-toast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'undo-toast';
+    toast.style.cssText = `
+      position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
+      background: var(--text); color: var(--white);
+      border-radius: 22px; padding: 0.55rem 1.1rem;
+      font-size: 0.72rem; font-family: 'Noto Serif TC', serif;
+      display: flex; align-items: center; gap: 0.8rem;
+      z-index: 9999; box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+      transition: opacity 0.3s; max-width: 88vw;
+    `;
+    document.body.appendChild(toast);
+  }
+  clearTimeout(undoToastTimer);
+  toast.innerHTML = `<span>已刪除「${label.slice(0,12)}${label.length>12?'…':''}」</span>
+    <button id="undo-toast-btn" style="background:var(--green);border:none;color:#fff;border-radius:12px;padding:0.2rem 0.7rem;font-size:0.7rem;cursor:pointer;font-family:'Noto Serif TC',serif;">還原</button>`;
+  toast.style.opacity = '1';
+  toast.querySelector('#undo-toast-btn').onclick = () => {
+    undoFn();
+    toast.style.opacity = '0';
+    clearTimeout(undoToastTimer);
+  };
+  undoToastTimer = setTimeout(() => { toast.style.opacity = '0'; }, 4000);
 }
 
 function deleteAddedItem(dayId, itemId) {
+  const el = document.getElementById('iti-user-' + itemId);
+  const title = el?.querySelector('.iti-title')?.textContent || '行程';
+
   itiAdded[dayId] = (itiAdded[dayId] || []).filter(i => i.id !== itemId);
   saveItiAdded();
-  const el = document.getElementById('iti-user-' + itemId);
+
   if (el) {
     el.style.transition = 'opacity 0.2s, transform 0.2s';
     el.style.opacity = '0';
     el.style.transform = 'translateX(20px)';
     setTimeout(() => el.remove(), 200);
   }
+
+  showUndoToast(title, async () => {
+    // 找回被刪掉的 item 資料（從 Firebase 重新載入）
+    await loadItiAdded();
+    // 如果 loadItiAdded 後還是找不到就算了（已被清除）
+    const restored = (itiAdded[dayId] || []).find(i => i.id === itemId);
+    if (restored) renderAddedItem(dayId, restored);
+  });
 }
 
 function renderAddedItem(dayId, item) {
@@ -2783,14 +2858,14 @@ function renderAddedItem(dayId, item) {
 
   div.innerHTML = `
     <div class="iti-time">${item.time || '—'}</div>
+    <div class="iti-preset-actions">
+      <button class="iti-edit-btn" onclick="openItiEditModal('${dayId}',${item.id})">編輯</button>
+      <button class="iti-delete-btn" style="position:static;transform:none;" onclick="deleteAddedItem('${dayId}',${item.id})">刪除</button>
+    </div>
     <div class="iti-content">
       <div class="iti-title">${item.title}</div>
       ${noteHtml}
       ${btnsHtml}
-    </div>
-    <div class="iti-action-btns">
-      <button class="iti-edit-btn" onclick="openItiEditModal('${dayId}',${item.id})">編輯</button>
-      <button class="iti-delete-btn" onclick="deleteAddedItem('${dayId}',${item.id})">刪除</button>
     </div>
   `;
 
@@ -3382,18 +3457,20 @@ async function saveChecklists() {
 }
 
 // ── HOTEL MODAL & RENDER ──
-let hotelImgData = null;
+let hotelImgFile = null;
+let hotelImgFile2 = null;
+let hotelImgData = null;   // existing URL when editing
 let hotelImgData2 = null;
 
 function previewHotelImg(e, slot) {
   const file = e.target.files[0]; if (!file) return;
+  if (slot === 2) hotelImgFile2 = file;
+  else hotelImgFile = file;
   const reader = new FileReader();
   reader.onload = ev => {
     if (slot === 2) {
-      hotelImgData2 = ev.target.result;
       document.getElementById('hotel-img-preview2').innerHTML = `<img src="${ev.target.result}" style="width:100%;height:100%;object-fit:cover;">`;
     } else {
-      hotelImgData = ev.target.result;
       document.getElementById('hotel-img-preview').innerHTML = `<img src="${ev.target.result}" style="width:100%;height:100%;object-fit:cover;">`;
     }
   };
@@ -3401,6 +3478,8 @@ function previewHotelImg(e, slot) {
 }
 
 function openHotelModal() {
+  hotelImgFile = null;
+  hotelImgFile2 = null;
   hotelImgData = null;
   hotelImgData2 = null;
   ['hotel-night','hotel-name','hotel-addr','hotel-checkin','hotel-checkout','hotel-note','hotel-map'].forEach(id => {
@@ -3600,15 +3679,32 @@ function hotelModalSave() {
   }
 }
 
-function saveHotelItem() {
+async function saveHotelItem() {
   const name  = document.getElementById('hotel-name').value.trim();
   const night = document.getElementById('hotel-night').value.trim();
   if (!name || !night) { alert('請填寫住宿日期和飯店名稱'); return; }
+  const btn = document.getElementById('hotelSaveBtn');
+  btn.disabled = true; btn.textContent = '儲存中…';
+
+  let img = '', img2 = '';
+  try {
+    if (hotelImgFile) {
+      btn.textContent = '上傳照片…';
+      const c = await compressImage(hotelImgFile);
+      img = await uploadToStorage(c, 'hotels/h_' + Date.now() + '_1.jpg', null);
+    }
+    if (hotelImgFile2) {
+      const c2 = await compressImage(hotelImgFile2);
+      img2 = await uploadToStorage(c2, 'hotels/h_' + Date.now() + '_2.jpg', null);
+    }
+  } catch(e) {
+    alert('圖片上傳失敗：' + e.message);
+    btn.disabled = false; btn.textContent = '新增';
+    return;
+  }
+
   const hotel = {
-    id: Date.now(),
-    img: hotelImgData || '',
-    img2: hotelImgData2 || '',
-    night, name,
+    id: Date.now(), img, img2, night, name,
     addr:     document.getElementById('hotel-addr').value.trim(),
     checkin:  document.getElementById('hotel-checkin').value.trim(),
     checkout: document.getElementById('hotel-checkout').value.trim(),
@@ -3619,6 +3715,7 @@ function saveHotelItem() {
   saveUserHotels();
   renderHotelCard(hotel);
   closeHotelModal();
+  btn.disabled = false; btn.textContent = '新增';
 }
 
 function deleteHotelCard(id) {
@@ -3632,6 +3729,8 @@ function openHotelEditModal(id) {
   // String comparison to handle type mismatch (Firebase returns numbers, HTML attr gives strings)
   const hotel = userHotels.find(h => String(h.id) === String(id));
   if (!hotel) { alert('找不到飯店資料，請重新整理頁面後再試'); return; }
+  hotelImgFile  = null;
+  hotelImgFile2 = null;
   hotelImgData  = hotel.img  || '';
   hotelImgData2 = hotel.img2 || '';
   document.getElementById('hotel-night').value    = hotel.night    || '';
@@ -3655,7 +3754,7 @@ function openHotelEditModal(id) {
   document.getElementById('hotelModal').classList.add('open');
 }
 
-function saveHotelEdit() {
+async function saveHotelEdit() {
   const modal = document.getElementById('hotelModal');
   const editId = modal.dataset.editId;
   const name  = document.getElementById('hotel-name').value.trim();
@@ -3663,11 +3762,30 @@ function saveHotelEdit() {
   if (!name || !night) { alert('請填寫住宿日期和飯店名稱'); return; }
   const idx = userHotels.findIndex(h => String(h.id) === String(editId));
   if (idx === -1) { alert('找不到飯店資料，儲存失敗'); return; }
+
+  const btn = document.getElementById('hotelSaveBtn');
+  btn.disabled = true; btn.textContent = '儲存中…';
+
+  let img  = hotelImgData  || '';
+  let img2 = hotelImgData2 || '';
+  try {
+    if (hotelImgFile) {
+      btn.textContent = '上傳照片…';
+      const c = await compressImage(hotelImgFile);
+      img = await uploadToStorage(c, 'hotels/h_' + Date.now() + '_1.jpg', null);
+    }
+    if (hotelImgFile2) {
+      const c2 = await compressImage(hotelImgFile2);
+      img2 = await uploadToStorage(c2, 'hotels/h_' + Date.now() + '_2.jpg', null);
+    }
+  } catch(e) {
+    alert('圖片上傳失敗：' + e.message);
+    btn.disabled = false; btn.textContent = '儲存';
+    return;
+  }
+
   userHotels[idx] = {
-    ...userHotels[idx],
-    img:      hotelImgData  || '',
-    img2:     hotelImgData2 || '',
-    night, name,
+    ...userHotels[idx], img, img2, night, name,
     addr:     document.getElementById('hotel-addr').value.trim(),
     checkin:  document.getElementById('hotel-checkin').value.trim(),
     checkout: document.getElementById('hotel-checkout').value.trim(),
@@ -3677,6 +3795,7 @@ function saveHotelEdit() {
   saveUserHotels();
   renderHotelCard(userHotels[idx]);
   closeHotelModal();
+  btn.disabled = false; btn.textContent = '儲存';
 }
 
 // ── ITINERARY EDIT MODAL ──
